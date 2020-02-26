@@ -4,7 +4,7 @@
  * Connects to the MPPT Solar Charger I2C interface and provides the following
  * functions:
  *   1. Simple character-based access for applications to the charger through a
- *	  pseudo-tty called /dev/mpptChg 
+ *	  pseudo-tty called /dev/mpptChg
  *   2. Optional functionality enabled by an external text configuration file
  *	  a. Automatic system shutdown on low-battery Alert
  *	  b. TCP port interface supporting same commands as pseudo-tty
@@ -18,7 +18,7 @@
  *
  * Copyright (c) 2018-2019 Dan Julio (dan@danjuliodesigns.com)
  *
- * Author's note: Yeah, I know this has grown into a big ole' hack.  It should be 
+ * Author's note: Yeah, I know this has grown into a big ole' hack.  It should be
  * refactored, etc, etc.  Were there more hours in the day...
  *
  * mpptChgD is free software: you can redistribute it and/or modify it
@@ -80,6 +80,7 @@
 #define PARAM_CHECK_SECS    300
 
 #define STATUS_ALERT_MASK   0x0040
+#define STATUS_NIGHT_MASK   0x0008
 
 #define MATCH(n) strcmp(name, n) == 0
 
@@ -131,6 +132,7 @@ cmd_t cmdList[NUM_CMDS] = {
 
 typedef struct {
 	bool enAutoShutdown;
+	int autoShutdownNight;
 	bool enParamOverride;
 	bool enLogging;
 	bool enWatchdog;
@@ -176,12 +178,12 @@ char rspFifo[MAX_FIFO_LEN];
 extern char* ptsname(int fd);
 
 
-
 void SetupDefaultConfigValues()
 {
 	int i;
 
 	config.enAutoShutdown = false;
+	config.autoShutdownNight = 0;
 	config.enParamOverride = false;
 	config.enLogging = false;
 	config.enWatchdog = false;
@@ -223,6 +225,9 @@ int ParseKeyHandler(void* user, const char* section, const char* name, const cha
 	if (MATCH("SHUTDOWN")) {
 		pconfig->enAutoShutdown = (atoi(value) != 0);
 		syslog(LOG_INFO,"Config SHUTDOWN = %d", pconfig->enAutoShutdown);
+	} else if (MATCH("SHUTDOWN_NIGHT")) {
+		pconfig->autoShutdownNight = atoi(value);
+		syslog(LOG_INFO,"Config SHUTDOWN NIGHT = %d", pconfig->autoShutdownNight);
 	} else if (MATCH("TCP_PORT")) {
 		pconfig->tcpPort = atoi(value);
 		syslog(LOG_INFO,"Config TCP_PORT = %d", pconfig->tcpPort);
@@ -444,6 +449,24 @@ bool EnableWatchdog()
 }
 
 
+bool EnableWatchdogNight()
+{
+	if (!WriteCharger("WDEN", WDEN_MAGIC_BYTE)) {
+		return false;
+	}
+
+	if (!WriteCharger("WDPWROFF", config.autoShutdownNight)) {
+		return false;
+	}
+
+	if (!WriteCharger("WDCNT", 1)) {
+		return false;
+	}
+
+	return true;
+}
+
+
 bool DisableWatchdog()
 {
 	if (!WriteCharger("WDEN", 0)) {
@@ -478,6 +501,31 @@ bool CheckAlertStatus(bool* alert)
 		return true;
 	} else {
 		*alert = false;
+		return false;
+	}
+}
+
+
+bool CheckNightStatus(bool* night)
+{
+	int s;
+
+	if (ReadCharger("STATUS", &s)) {
+		*night = ((s & STATUS_NIGHT_MASK) == STATUS_NIGHT_MASK);
+
+		// Handle a special case where we have on very infrequent occasion
+		// seen a response of 0xFFFF for the read.  This could cause us to shutdown
+		// the host without the charger cycling power which results in a hung system
+		// (host won't ever reboot).  So we check again just to be sure.
+		if (*night) {
+			(void) ReadCharger("STATUS", &s);
+			if ((s & STATUS_NIGHT_MASK) == 0) {
+				*night = false;
+			}
+		}
+		return true;
+	} else {
+		*night = false;
 		return false;
 	}
 }
@@ -648,7 +696,7 @@ cmdBuf_t* GetCmdBufPtr(int fd)
 	}
 
 	return NULL;
-}  
+}
 
 
 bool ProcessCmdBytes(char* buf, int numBytes, cmdBuf_t* cmd)
@@ -704,9 +752,9 @@ void SigHandler(int sig)
 		close(linkFd);
 	if (linkname)
 		unlink(linkname);
-	if (config.enLogging) 
+	if (config.enLogging)
 		close(logFd);
-	if (config.enWatchdog) 
+	if (config.enWatchdog)
 		(void) DisableWatchdog();
 	syslog(LOG_NOTICE, "Terminating on signal %d",sig);
 	exit(0);
@@ -768,7 +816,7 @@ int main(int argc, char *argv[])
 	int c, i;
 	struct timeval select_timeout, prev_time;
 	int paramTimeout, logTimeout, watchdogTimeout;
-	bool alertDetected;
+	bool alertDetected, nightDetected;
 	cmdBuf_t* curCmdBufP;
 
 	// Setup default values
@@ -851,7 +899,7 @@ int main(int argc, char *argv[])
 		addr.sin_family = AF_INET;
 		addr.sin_addr.s_addr = 0;
 		addr.sin_port = htons(config.tcpPort);
-	 
+
 		/* Set up to listen on the given port */
 		if( bind( sockFd, (struct sockaddr*)(&addr),
 			sizeof(struct sockaddr_in)) < 0 ) {
@@ -878,7 +926,7 @@ int main(int argc, char *argv[])
 		close(2);
 	}
 
-	// Set up the files/sockets for the select() call 
+	// Set up the files/sockets for the select() call
 	FD_SET(linkFd,&fdsread);
 	if ( linkFd >= maxfd ) {
 		maxfd = linkFd + 1;
@@ -915,7 +963,6 @@ int main(int argc, char *argv[])
 		LogValueNames();
 	}
 
-
 	// Initial timestamp for timed activities
 	gettimeofday(&prev_time, NULL);
 
@@ -923,8 +970,8 @@ int main(int argc, char *argv[])
 	while (1) {
 
 		// Wait for data from the listening socket, the linked,
-		// device, or the remote connection or evaluate any 
-		// activities on 1 second intervals 
+		// device, or the remote connection or evaluate any
+		// activities on 1 second intervals
 		fdsreaduse = fdsread;
 		select_timeout.tv_sec = 1;
 		select_timeout.tv_usec = 0;
@@ -932,11 +979,11 @@ int main(int argc, char *argv[])
 			break;
 		}
 
-		// Activity on the socket 
+		// Activity on the socket
 		if ( config.tcpPort && FD_ISSET(sockFd,&fdsreaduse) ) {
 			int fd;
 
-			// Accept the remote systems attachment 
+			// Accept the remote systems attachment
 			remoteaddrlen = sizeof(struct sockaddr_in);
 			fd = accept(sockFd,(struct sockaddr*)(&remoteaddr),
 				&remoteaddrlen);
@@ -951,7 +998,7 @@ int main(int argc, char *argv[])
 					syslog(LOG_ERR, "Internal error, did not have cmdBuf for socket");
 					goto err_exit;
 				}
-				// Tell select to watch this new socket 
+				// Tell select to watch this new socket
 				FD_SET(fd,&fdsread);
 				if ( fd >= maxfd )
 					maxfd = fd + 1;
@@ -969,7 +1016,7 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		// Data to read from the linked device file 
+		// Data to read from the linked device file
 		if ( FD_ISSET(linkFd,&fdsreaduse) ) {
 			devbytes = read(linkFd,devbuf,MAX_STRING_LEN);
 			if (debug>1)
@@ -1017,7 +1064,7 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		// Data to read from the remote system 
+		// Data to read from the remote system
 		for (i=0 ; i<curSockConnects ; i++) {
 			if (FD_ISSET(remotefd[i],&fdsreaduse) ) {
 
@@ -1057,7 +1104,7 @@ int main(int argc, char *argv[])
 		}
 
 		// Check for activities to do on second boundaries
-		//   prev_time 
+		//   prev_time
 		if (SecTick(&prev_time)) {
 			if (config.enAutoShutdown) {
 				if (!CheckAlertStatus(&alertDetected)) {
@@ -1065,6 +1112,18 @@ int main(int argc, char *argv[])
 				}
 				if (alertDetected) {
 					syslog(LOG_CRIT, "Low Battery shutdown");
+					system("sudo shutdown now");
+				}
+			}
+			if (config.autoShutdownNight) {
+				if (!CheckNightStatus(&nightDetected)) {
+					goto err_exit;
+				}
+				if (nightDetected) {
+					syslog(LOG_CRIT, "Night shutdown");
+					if (!EnableWatchdogNight()) {
+						goto err_exit;
+					}
 					system("sudo shutdown now");
 				}
 			}
@@ -1102,9 +1161,9 @@ err_exit:
 	for (i=0 ; i<curSockConnects ; i++)
 		close(remotefd[i]);
 	close(linkFd);
-	if (config.enLogging) 
+	if (config.enLogging)
 		close(logFd);
-	if (config.enWatchdog) 
+	if (config.enWatchdog)
 		(void) DisableWatchdog();
 	exit(1);
 }

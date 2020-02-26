@@ -19,6 +19,12 @@
 # OS shutdown upon detection of an imminent power down due to low battery.
 SHUTDOWN=1
 
+# Automatic Night shutdown.  Uncomment the following line to enable a controlled
+# OS shutdown upon detection of night.
+# Be sure to set a watchdog manualy or a WATCHDOG_NIGHT
+SHUTDOWN_NIGHT=0
+#WATCHDOG_NIGHT=10800 # every 3h we wake up to see if night still there
+
 # Remote TCP access.  Uncomment and set the TCP_PORT to a non-zero number to enable
 # TCP access to the daemon.
 TCP_PORT=23000
@@ -28,7 +34,7 @@ TCP_MAX=4
 # Logging parameters
 #
 # Configure the logfile
-LOG_FILE=/home/pi/mpptChgDlog.txt
+LOG_FILE=/home/valentin/logs/mpptChgDlog.txt
 #
 # Number of seconds between log entries
 LOG_DELAY=60
