@@ -52,6 +52,7 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <ctype.h>
+#include <time.h>
 #include "ini.h"
 #include "wiringPi.h"
 #include "wiringPiI2C.h"
@@ -132,7 +133,8 @@ cmd_t cmdList[NUM_CMDS] = {
 
 typedef struct {
 	bool enAutoShutdown;
-	int autoShutdownNight;
+	int autoShutdownNightTimeOff;
+	int autoShutdownNightTimeBeforeOff;
 	bool enParamOverride;
 	bool enLogging;
 	bool enWatchdog;
@@ -176,14 +178,15 @@ cmdBuf_t cmdBufs[MAX_CONNECTIONS];
 int rspFifoPushI = 0;
 char rspFifo[MAX_FIFO_LEN];
 extern char* ptsname(int fd);
-
+time_t nightTriggered;
 
 void SetupDefaultConfigValues()
 {
 	int i;
 
 	config.enAutoShutdown = false;
-	config.autoShutdownNight = 0;
+	config.autoShutdownNightTimeOff = 0;
+	config.autoShutdownNightTimeBeforeOff = 0;
 	config.enParamOverride = false;
 	config.enLogging = false;
 	config.enWatchdog = false;
@@ -225,9 +228,12 @@ int ParseKeyHandler(void* user, const char* section, const char* name, const cha
 	if (MATCH("SHUTDOWN")) {
 		pconfig->enAutoShutdown = (atoi(value) != 0);
 		syslog(LOG_INFO,"Config SHUTDOWN = %d", pconfig->enAutoShutdown);
-	} else if (MATCH("SHUTDOWN_NIGHT")) {
-		pconfig->autoShutdownNight = atoi(value);
-		syslog(LOG_INFO,"Config SHUTDOWN NIGHT = %d", pconfig->autoShutdownNight);
+	} else if (MATCH("SHUTDOWN_NIGHT_TIME_OFF")) {
+		pconfig->autoShutdownNightTimeOff = atoi(value);
+		syslog(LOG_INFO,"Config SHUTDOWN NIGHT TIME OFF = %d", pconfig->autoShutdownNightTimeOff);
+	} else if (MATCH("SHUTDOWN_NIGHT_TIME_BEFORE_OFF")) {
+		pconfig->autoShutdownNightTimeBeforeOff = atoi(value);
+		syslog(LOG_INFO,"Config SHUTDOWN NIGHT TIME BEFORE OFF = %d", pconfig->autoShutdownNightTimeBeforeOff);
 	} else if (MATCH("TCP_PORT")) {
 		pconfig->tcpPort = atoi(value);
 		syslog(LOG_INFO,"Config TCP_PORT = %d", pconfig->tcpPort);
@@ -455,7 +461,7 @@ bool EnableWatchdogNight()
 		return false;
 	}
 
-	if (!WriteCharger("WDPWROFF", config.autoShutdownNight)) {
+	if (!WriteCharger("WDPWROFF", config.autoShutdownNightTimeOff)) {
 		return false;
 	}
 
@@ -1115,16 +1121,23 @@ int main(int argc, char *argv[])
 					system("sudo shutdown now");
 				}
 			}
-			if (config.autoShutdownNight) {
+			if (config.autoShutdownNightTimeOff) {
 				if (!CheckNightStatus(&nightDetected)) {
 					goto err_exit;
 				}
 				if (nightDetected) {
-					syslog(LOG_CRIT, "Night shutdown");
-					if (!EnableWatchdogNight()) {
-						goto err_exit;
+				    double diff = difftime(prev_time.tv_sec, nightTriggered);
+					if (config.autoShutdownNightTimeBeforeOff == 0 || (nightTriggered > 0 && diff >= config.autoShutdownNightTimeBeforeOff)) {
+					    syslog(LOG_CRIT, "Night shutdown");
+                        if (!EnableWatchdogNight()) {
+						    goto err_exit;
+					    }
+					    system("sudo shutdown now");
+					} else if (config.autoShutdownNightTimeBeforeOff > 0 && nightTriggered == 0) {
+    				    nightTriggered = prev_time.tv_sec;
 					}
-					system("sudo shutdown now");
+				} else if (nightTriggered > 0) {
+    				nightTriggered = 0;
 				}
 			}
 			if (config.enParamOverride) {

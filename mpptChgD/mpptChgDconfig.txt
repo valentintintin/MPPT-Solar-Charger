@@ -21,9 +21,12 @@ SHUTDOWN=1
 
 # Automatic Night shutdown.  Uncomment the following line to enable a controlled
 # OS shutdown upon detection of night.
-# Be sure to set a watchdog manualy or a WATCHDOG_NIGHT
-SHUTDOWN_NIGHT=0
-#WATCHDOG_NIGHT=10800 # every 3h we wake up to see if night still there
+# Time specified is watchdog power off time
+SHUTDOWN_NIGHT_TIME_OFF=10800 # every 3h we wake up to see if night still there
+# Time after first detection to power off
+# Set 0 to power off when night is detected otherwise set number of seconds before
+# next check. If it is night during the second check, it powers off
+SHUTDOWN_NIGHT_TIME_BEFORE_OFF=1800 # check next night in 30 minutes
 
 # Remote TCP access.  Uncomment and set the TCP_PORT to a non-zero number to enable
 # TCP access to the daemon.
